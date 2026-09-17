@@ -9,16 +9,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-instant}
       POSTGRES_DB: ${POSTGRES_DB:-instant}
     volumes:
-      - "backend-db:/var/lib/postgresql/data"
+      - "backend_db:/var/lib/postgresql/data"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-instant}"]
       interval: 10s
       timeout: 5s
       retries: 5
-    deploy:
-      placement:
-        constraints:
-          - node.labels.storage==true
     command:
       - "postgres"
       - "-c"
@@ -31,20 +27,21 @@ services:
       - "shared_preload_libraries=pg_hint_plan"
       - "-c"
       - "random_page_cost=1.1"
+
   www:
     image: "ghcr.io/instantdb/dashboard:latest"
     environment:
-      INSTANT_BACKEND_URL: ${SERVER_URL:? example http://server.localhost}
+      INSTANT_BACKEND_URL: ${INSTANT_BACKEND_URL:? example http://server.localhost}
     networks:
       - caddy
       - default
     deploy:
       labels:
-        caddy: ${DASHBOARD_URL:? example http://dash.localhost}
+        caddy: ${INSTANT_DASHBOARD_URL:? example http://dash.localhost}
         caddy.reverse_proxy: "{{upstreams 3000}}"
+
   minio:
-    image: minio/minio:latest
-    restart: always
+    image: quay.io/minio/minio:latest
     networks:
       - caddy
       - default
@@ -65,20 +62,19 @@ services:
       labels:
         caddy: ${S3_PUBLIC_ENDPOINT:? example http://storage.localhost}
         caddy.reverse_proxy: "{{upstreams 9000}}"
-      placement:
-        constraints:
-          - node.labels.storage==true
 
   createbuckets:
-    image: minio/mc
+    image: quay.io/minio/mc
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
       S3_BUCKET: ${S3_BUCKET:-instant-bucket}
+      S3_APP_BACKUPS_BUCKET: ${S3_APP_BACKUPS_BUCKET:-instant-app-backups-bucket}
     entrypoint: >
       /bin/sh -c "
-      until /usr/bin/mc alias set local http://minio:9000 $$$$MINIO_ROOT_USER $$$$MINIO_ROOT_PASSWORD; do sleep 2; done;
-      /usr/bin/mc mb --ignore-existing local/$$$$S3_BUCKET;
+      /usr/bin/mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
+      /usr/bin/mc mb --ignore-existing local/$$S3_BUCKET;
+      /usr/bin/mc mb --ignore-existing local/$$S3_APP_BACKUPS_BUCKET;
       exit"
     deploy:
       restart_policy:
@@ -90,13 +86,15 @@ services:
     networks:
       - caddy
       - default
+    volumes:
+      - server_config:/app/resources/config
     environment:
       SWARM_SERVICE_NAME: server
       WAL_HISTORY_STORAGE: pg
       DATABASE_URL: "postgresql://${POSTGRES_USER:-instant}:${POSTGRES_PASSWORD:-pass}@postgres:5432/${POSTGRES_DB:-instant}?sslmode=disable"
       CONNECTION_POOL_SIZE: ${CONNECTION_POOL_SIZE:-20}
-      INSTANT_BACKEND_URL: ${SERVER_URL:? example http://server.localhost}
-      INSTANT_DASHBOARD_URL: ${DASHBOARD_URL:? example http://dash.localhost}
+      INSTANT_BACKEND_URL: ${INSTANT_BACKEND_URL:? example http://server.localhost}
+      INSTANT_DASHBOARD_URL: ${INSTANT_DASHBOARD_URL:? example http://dash.localhost}
       INSTANT_SUPERUSER_EMAIL: ${INSTANT_SUPERUSER_EMAIL:-}
       INSTANT_DASHBOARD_GOOGLE_OAUTH_CLIENT_ID: ${INSTANT_DASHBOARD_GOOGLE_OAUTH_CLIENT_ID:-}
       INSTANT_DASHBOARD_GOOGLE_OAUTH_CLIENT_SECRET: ${INSTANT_DASHBOARD_GOOGLE_OAUTH_CLIENT_SECRET:-}
@@ -119,13 +117,11 @@ services:
       S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
       S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:? example http://storage.localhost}
       S3_BUCKET: ${S3_BUCKET:-instant-bucket}
-    secrets:
-      - source: server_config
-        target: /app/resources/config/override.edn
+      S3_APP_BACKUPS_BUCKET: ${S3_APP_BACKUPS_BUCKET:-instant-app-backups-bucket}
     deploy:
-      replicas: 2
+      replicas: 1
       labels:
-        caddy: ${SERVER_URL:? ex http://server.localhost}
+        caddy: ${INSTANT_BACKEND_URL:? ex http://server.localhost}
         caddy.reverse_proxy: "{{upstreams 8888}}"
 
   caddy:
@@ -135,26 +131,19 @@ services:
       - 443:443/tcp
       - 443:443/udp
     environment:
-      - CADDY_INGRESS_NETWORKS=caddy
+      - CADDY_INGRESS_NETWORKS=instant_caddy
     networks:
       - caddy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - caddy_data:/data
-    deploy:
-      placement:
-        constraints:
-          - node.labels.caddy==true
 
 volumes:
-  backend-db:
+  backend_db:
   minio_data:
   caddy_data:
-
-secrets:
   server_config:
-    external: true
 
 networks:
   caddy:
-    external: true
+    attachable: true
